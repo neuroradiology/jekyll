@@ -15,6 +15,7 @@ module Jekyll
     ATTRIBUTES_FOR_LIQUID = %w(
       content
       dir
+      excerpt
       name
       path
       url
@@ -47,7 +48,8 @@ module Jekyll
               end
 
       process(name)
-      read_yaml(File.join(base, dir), name)
+      read_yaml(PathManager.join(base, dir), name)
+      generate_excerpt if site.config["page_excerpts"]
 
       data.default_proc = proc do |_, key|
         site.frontmatter_defaults.find(relative_path, type, key)
@@ -62,12 +64,7 @@ module Jekyll
     #
     # Returns the String destination directory.
     def dir
-      if url.end_with?("/")
-        url
-      else
-        url_dir = File.dirname(url)
-        url_dir.end_with?("/") ? url_dir : "#{url_dir}/"
-      end
+      url.end_with?("/") ? url : url_dir
     end
 
     # The full path and filename of the post. Defined in the YAML of the post
@@ -119,6 +116,8 @@ module Jekyll
     # NOTE: `String#gsub` removes all trailing periods (in comparison to `String#chomp`)
     # Returns nothing.
     def process(name)
+      return unless name
+
       self.ext = File.extname(name)
       self.basename = name[0..-ext.length - 1].gsub(%r!\.*\z!, "")
     end
@@ -145,7 +144,7 @@ module Jekyll
 
     # The path to the page source file, relative to the site source
     def relative_path
-      @relative_path ||= File.join(*[@dir, @name].map(&:to_s).reject(&:empty?)).sub(%r!\A\/!, "")
+      @relative_path ||= PathManager.join(@dir, @name).sub(%r!\A/!, "")
     end
 
     # Obtain destination path.
@@ -154,10 +153,13 @@ module Jekyll
     #
     # Returns the destination file path String.
     def destination(dest)
-      path = site.in_dest_dir(dest, URL.unescape_path(url))
-      path = File.join(path, "index") if url.end_with?("/")
-      path << output_ext unless path.end_with? output_ext
-      path
+      @destination ||= {}
+      @destination[dest] ||= begin
+        path = site.in_dest_dir(dest, URL.unescape_path(url))
+        path = File.join(path, "index") if url.end_with?("/")
+        path << output_ext unless path.end_with? output_ext
+        path
+      end
     end
 
     # Returns the object as a debug String.
@@ -181,6 +183,35 @@ module Jekyll
 
     def write?
       true
+    end
+
+    def excerpt_separator
+      @excerpt_separator ||= (data["excerpt_separator"] || site.config["excerpt_separator"]).to_s
+    end
+
+    def excerpt
+      return @excerpt if defined?(@excerpt)
+
+      @excerpt = data["excerpt"] ? data["excerpt"].to_s : nil
+    end
+
+    def generate_excerpt?
+      !excerpt_separator.empty? && instance_of?(Jekyll::Page) && html?
+    end
+
+    private
+
+    def generate_excerpt
+      return unless generate_excerpt?
+
+      data["excerpt"] ||= Jekyll::PageExcerpt.new(self)
+    end
+
+    def url_dir
+      @url_dir ||= begin
+        value = File.dirname(url)
+        value.end_with?("/") ? value : "#{value}/"
+      end
     end
   end
 end

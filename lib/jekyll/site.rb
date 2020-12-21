@@ -3,14 +3,14 @@
 module Jekyll
   class Site
     attr_reader   :source, :dest, :cache_dir, :config
-    attr_accessor :layouts, :pages, :static_files, :drafts,
+    attr_accessor :layouts, :pages, :static_files, :drafts, :inclusions,
                   :exclude, :include, :lsi, :highlighter, :permalink_style,
                   :time, :future, :unpublished, :safe, :plugins, :limit_posts,
                   :show_drafts, :keep_files, :baseurl, :data, :file_read_opts,
                   :gems, :plugin_manager, :theme
 
     attr_accessor :converters, :generators, :reader
-    attr_reader   :regenerator, :liquid_renderer, :includes_load_paths
+    attr_reader   :regenerator, :liquid_renderer, :includes_load_paths, :filter_cache, :profiler
 
     # Public: Initialize a new Site.
     #
@@ -23,8 +23,10 @@ module Jekyll
       self.config = config
 
       @cache_dir       = in_source_dir(config["cache_dir"])
+      @filter_cache    = {}
 
       @reader          = Reader.new(self)
+      @profiler        = Profiler.new(self)
       @regenerator     = Regenerator.new(self)
       @liquid_renderer = LiquidRenderer.new(self)
 
@@ -70,19 +72,21 @@ module Jekyll
     #
     # Returns nothing.
     def process
+      return profiler.profile_process if config["profile"]
+
       reset
       read
       generate
       render
       cleanup
       write
-      print_stats if config["profile"]
     end
 
     def print_stats
       Jekyll.logger.info @liquid_renderer.stats_table
     end
 
+    # rubocop:disable Metrics/AbcSize
     # rubocop:disable Metrics/MethodLength
     #
     # Reset Site details.
@@ -95,6 +99,7 @@ module Jekyll
                     Time.now
                   end
       self.layouts = {}
+      self.inclusions = {}
       self.pages = []
       self.static_files = []
       self.data = {}
@@ -112,8 +117,10 @@ module Jekyll
 
       Jekyll::Cache.clear_if_config_changed config
       Jekyll::Hooks.trigger :site, :after_reset, self
+      nil
     end
     # rubocop:enable Metrics/MethodLength
+    # rubocop:enable Metrics/AbcSize
 
     # Load necessary libraries, plugins, converters, and generators.
     #
@@ -145,9 +152,9 @@ module Jekyll
     #
     # Returns a Hash containing collection name-to-instance pairs.
     def collections
-      @collections ||= Hash[collection_names.map do |coll|
-        [coll, Jekyll::Collection.new(self, coll)]
-      end]
+      @collections ||= collection_names.each_with_object({}) do |name, hsh|
+        hsh[name] = Jekyll::Collection.new(self, name)
+      end
     end
 
     # The list of collection names.
@@ -174,6 +181,7 @@ module Jekyll
       reader.read
       limit_posts!
       Jekyll::Hooks.trigger :site, :post_read, self
+      nil
     end
 
     # Run each of the Generators.
@@ -186,6 +194,7 @@ module Jekyll
         Jekyll.logger.debug "Generating:",
                             "#{generator.class} finished in #{Time.now - start} seconds."
       end
+      nil
     end
 
     # Render the site to the destination.
@@ -202,6 +211,7 @@ module Jekyll
       render_pages(payload)
 
       Jekyll::Hooks.trigger :site, :post_render, self, payload
+      nil
     end
 
     # Remove orphaned files and empty directories in destination.
@@ -209,17 +219,20 @@ module Jekyll
     # Returns nothing.
     def cleanup
       site_cleaner.cleanup!
+      nil
     end
 
     # Write static files, pages, and posts.
     #
     # Returns nothing.
     def write
+      Jekyll::Commands::Doctor.conflicting_urls(self)
       each_site_file do |item|
         item.write(dest) if regenerator.regenerate?(item)
       end
       regenerator.write_metadata
       Jekyll::Hooks.trigger :site, :post_write, self
+      nil
     end
 
     def posts
@@ -303,8 +316,9 @@ module Jekyll
     # passed in as argument.
 
     def instantiate_subclasses(klass)
-      klass.descendants.select { |c| !safe || c.safe }.sort.map do |c|
-        c.new(config)
+      klass.descendants.select { |c| !safe || c.safe }.tap do |result|
+        result.sort!
+        result.map! { |c| c.new(config) }
       end
     end
 
@@ -326,15 +340,15 @@ module Jekyll
     #
     # Returns an Array of Documents which should be written
     def docs_to_write
-      @docs_to_write ||= documents.select(&:write?)
+      documents.select(&:write?)
     end
 
     # Get all the documents
     #
     # Returns an Array of all Documents
     def documents
-      @documents ||= collections.reduce(Set.new) do |docs, (_, collection)|
-        docs + collection.docs + collection.files
+      collections.each_with_object(Set.new) do |(_, collection), set|
+        set.merge(collection.docs).merge(collection.files)
       end.to_a
     end
 
@@ -428,9 +442,18 @@ module Jekyll
       @collections_path ||= dir_str.empty? ? source : in_source_dir(dir_str)
     end
 
+    # Public
+    #
+    # Returns the object as a debug String.
+    def inspect
+      "#<#{self.class} @source=#{@source}>"
+    end
+
     private
 
     def load_theme_configuration(config)
+      return config if config["ignore_theme_config"] == true
+
       theme_config_file = in_theme_dir("_config.yml")
       return config unless File.exist?(theme_config_file)
 
@@ -470,7 +493,7 @@ module Jekyll
     # Disable Marshaling cache to disk in Safe Mode
     def configure_cache
       Jekyll::Cache.cache_dir = in_source_dir(config["cache_dir"], "Jekyll/Cache")
-      Jekyll::Cache.disable_disk_cache! if safe
+      Jekyll::Cache.disable_disk_cache! if safe || config["disable_disk_cache"]
     end
 
     def configure_plugins
@@ -520,7 +543,8 @@ module Jekyll
     def render_regenerated(document, payload)
       return unless regenerator.regenerate?(document)
 
-      document.output = Jekyll::Renderer.new(self, document, payload).run
+      document.renderer.payload = payload
+      document.output = document.renderer.run
       document.trigger_hooks(:post_render)
     end
   end

@@ -64,6 +64,16 @@ class TestEntryFilter < JekyllUnitTest
       assert_equal files, @site.reader.filter_entries(files)
     end
 
+    should "not exclude explicitly included entry" do
+      entries  = %w(README TODO css .htaccess _movies/.)
+      excludes = %w(README TODO css)
+      includes = %w(README .htaccess)
+      @site.exclude = excludes
+      @site.include = includes
+      filtered_entries = EntryFilter.new(@site).filter(entries)
+      assert_equal %w(README .htaccess), filtered_entries
+    end
+
     should "keep safe symlink entries when safe mode enabled" do
       allow(File).to receive(:symlink?).with("symlink.js").and_return(true)
       files = %w(symlink.js)
@@ -82,7 +92,6 @@ class TestEntryFilter < JekyllUnitTest
       assert_equal %w(), entries
     end
 
-    # rubocop:disable Performance/FixedSize
     should "include only safe symlinks in safe mode" do
       # no support for symlinks on Windows
       skip_if_windows "Jekyll does not currently support symlinks on Windows."
@@ -93,7 +102,6 @@ class TestEntryFilter < JekyllUnitTest
       assert_equal %w(main.scss symlinked-file).length, site.pages.length
       refute_equal [], site.static_files
     end
-    # rubocop:enable Performance/FixedSize
 
     should "include symlinks in unsafe mode" do
       # no support for symlinks on Windows
@@ -111,10 +119,8 @@ class TestEntryFilter < JekyllUnitTest
       site = fixture_site("safe" => true, "include" => ["symlinked-file-outside-source"])
       site.reader.read_directories("symlink-test")
 
-      # rubocop:disable Performance/FixedSize
       assert_equal %w(main.scss symlinked-file).length, site.pages.length
       refute_includes site.static_files.map(&:name), "symlinked-file-outside-source"
-      # rubocop:enable Performance/FixedSize
     end
   end
 
@@ -146,6 +152,19 @@ class TestEntryFilter < JekyllUnitTest
       data = ["vendor/bundle"]
       assert @filter.glob_include?(data, "/vendor/bundle")
       assert @filter.glob_include?(data, "vendor/bundle")
+    end
+
+    should "match even if there is no trailing slash" do
+      data = ["/vendor/bundle/", "vendor/ruby"]
+      assert @filter.glob_include?(data, "vendor/bundle/jekyll/lib/page.rb")
+      assert @filter.glob_include?(data, "/vendor/ruby/lib/set.rb")
+    end
+
+    should "match directory only if there is trailing slash" do
+      data = ["_glob_include_test/_is_dir/", "_glob_include_test/_not_dir/"]
+      assert @filter.glob_include?(data, "_glob_include_test/_is_dir")
+      assert @filter.glob_include?(data, "_glob_include_test/_is_dir/include_me.txt")
+      refute @filter.glob_include?(data, "_glob_include_test/_not_dir")
     end
   end
 end

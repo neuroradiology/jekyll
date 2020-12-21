@@ -85,7 +85,7 @@ module Jekyll
     def retrieve_dirs(_base, dir, dot_dirs)
       dot_dirs.each do |file|
         dir_path = site.in_source_dir(dir, file)
-        rel_path = File.join(dir, file)
+        rel_path = PathManager.join(dir, file)
         @site.reader.read_directories(rel_path) unless @site.dest.chomp("/") == dir_path
       end
     end
@@ -161,24 +161,32 @@ module Jekyll
     end
 
     def read_included_excludes
-      site.include.each do |entry|
-        next if entry == ".htaccess"
+      entry_filter = EntryFilter.new(site)
 
+      site.include.each do |entry|
         entry_path = site.in_source_dir(entry)
         next if File.directory?(entry_path)
+        next if entry_filter.symlink?(entry_path)
 
         read_included_file(entry_path) if File.file?(entry_path)
       end
     end
 
     def read_included_file(entry_path)
-      dir  = File.dirname(entry_path).sub(site.source, "")
-      file = Array(File.basename(entry_path))
       if Utils.has_yaml_header?(entry_path)
-        site.pages.concat(PageReader.new(site, dir).read(file))
+        conditionally_generate_entry(entry_path, site.pages, PageReader)
       else
-        site.static_files.concat(StaticFileReader.new(site, dir).read(file))
+        conditionally_generate_entry(entry_path, site.static_files, StaticFileReader)
       end
+    end
+
+    def conditionally_generate_entry(entry_path, container, reader)
+      return if container.find { |item| site.in_source_dir(item.relative_path) == entry_path }
+
+      dir, files = File.split(entry_path)
+      dir.sub!(site.source, "")
+      files = Array(files)
+      container.concat(reader.new(site, dir).read(files))
     end
   end
 end

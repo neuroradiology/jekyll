@@ -3,9 +3,8 @@
 module Jekyll
   class EntryFilter
     attr_reader :site
-    SPECIAL_LEADING_CHARACTERS = [
-      ".", "_", "#", "~",
-    ].freeze
+
+    SPECIAL_LEADING_CHAR_REGEX = %r!\A#{Regexp.union([".", "_", "#", "~"])}!o.freeze
 
     def initialize(site, base_directory = nil)
       @site = site
@@ -31,13 +30,24 @@ module Jekyll
 
     def filter(entries)
       entries.reject do |e|
-        # Reject this entry if it is a symlink.
-        next true if symlink?(e)
-        # Do not reject this entry if it is included.
-        next false if included?(e)
+        # Reject this entry if it is just a "dot" representation.
+        #   e.g.: '.', '..', '_movies/.', 'music/..', etc
+        next true if e.end_with?(".")
 
-        # Reject this entry if it is special, a backup file, or excluded.
-        special?(e) || backup?(e) || excluded?(e)
+        # Check if the current entry is explicitly included and cache the result
+        included = included?(e)
+
+        # Reject current entry if it is excluded but not explicitly included as well.
+        next true if excluded?(e) && !included
+
+        # Reject current entry if it is a symlink.
+        next true if symlink?(e)
+
+        # Do not reject current entry if it is explicitly included.
+        next false if included
+
+        # Reject current entry if it is special or a backup file.
+        special?(e) || backup?(e)
       end
     end
 
@@ -47,12 +57,12 @@ module Jekyll
     end
 
     def special?(entry)
-      SPECIAL_LEADING_CHARACTERS.include?(entry[0..0]) ||
-        SPECIAL_LEADING_CHARACTERS.include?(File.basename(entry)[0..0])
+      SPECIAL_LEADING_CHAR_REGEX.match?(entry) ||
+        SPECIAL_LEADING_CHAR_REGEX.match?(File.basename(entry))
     end
 
     def backup?(entry)
-      entry[-1..-1] == "~"
+      entry.end_with?("~")
     end
 
     def excluded?(entry)
@@ -86,48 +96,26 @@ module Jekyll
       )
     end
 
-    # --
-    # Check if an entry matches a specific pattern and return true,false.
-    # Returns true if path matches against any glob pattern.
-    # --
-    def glob_include?(enum, entry)
-      entry_path = source_path.join(entry)
-      enum.any? do |exp|
-        # Users who send a Regexp knows what they want to
-        # exclude, so let them send a Regexp to exclude files,
-        # we will not bother caring if it works or not, it's
-        # on them at this point.
+    # Check if an entry matches a specific pattern.
+    # Returns true if path matches against any glob pattern, else false.
+    def glob_include?(enumerator, entry)
+      entry_with_source = PathManager.join(site.source, entry)
+      entry_is_directory = File.directory?(entry_with_source)
 
-        if exp.is_a?(Regexp)
-          entry_path =~ exp
+      enumerator.any? do |pattern|
+        case pattern
+        when String
+          pattern_with_source = PathManager.join(site.source, pattern)
 
+          File.fnmatch?(pattern_with_source, entry_with_source) ||
+            entry_with_source.start_with?(pattern_with_source) ||
+            (pattern_with_source == "#{entry_with_source}/" if entry_is_directory)
+        when Regexp
+          pattern.match?(entry_with_source)
         else
-          item = source_path.join(exp)
-
-          # If it's a directory they want to exclude, AKA
-          # ends with a "/" then we will go on to check and
-          # see if the entry falls within that path and
-          # exclude it if that's the case.
-
-          if entry.end_with?("/")
-            entry_path.in_path?(
-              item
-            )
-
-          else
-            File.fnmatch?(item, entry_path) ||
-              entry_path.to_path.start_with?(
-                item
-              )
-          end
+          false
         end
       end
-    end
-
-    private
-
-    def source_path
-      @source_path ||= Pathutil.new(site.in_source_dir)
     end
   end
 end
